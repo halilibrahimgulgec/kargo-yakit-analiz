@@ -43,47 +43,19 @@ def muhasebe():
 def api_plakalar():
     """Plaka listesi API - araç tipine göre filtrelenebilir"""
     try:
-        import sqlite3
-        conn = sqlite3.connect('kargo_data.db')
-        cursor = conn.cursor()
-
+        from database import get_plakalar_by_type, get_all_plakas
+        
         arac_tipi = request.args.get('tip')
-
+        
         if arac_tipi == 'binek':
-            cursor.execute('''
-                SELECT DISTINCT y.plaka
-                FROM yakit y
-                JOIN araclar a ON y.plaka = a.plaka
-                WHERE a.arac_tipi = 'BİNEK ARAÇ'
-                AND a.aktif = 1
-                AND a.sahip = 'BİZİM'
-                ORDER BY y.plaka
-            ''')
+            plakalar = get_plakalar_by_type('binek')
         elif arac_tipi == 'is_makinesi':
-            cursor.execute('''
-                SELECT DISTINCT y.plaka
-                FROM yakit y
-                JOIN araclar a ON y.plaka = a.plaka
-                WHERE a.arac_tipi = 'İŞ MAKİNESİ'
-                AND a.aktif = 1
-                AND a.sahip = 'BİZİM'
-                ORDER BY y.plaka
-            ''')
+            plakalar = get_plakalar_by_type('is_makinesi')
         elif arac_tipi == 'kargo':
-            cursor.execute('''
-                SELECT DISTINCT y.plaka
-                FROM yakit y
-                JOIN araclar a ON y.plaka = a.plaka
-                WHERE a.arac_tipi = 'KARGO ARACI'
-                AND a.aktif = 1
-                AND a.sahip = 'BİZİM'
-                ORDER BY y.plaka
-            ''')
+            plakalar = get_plakalar_by_type('kargo')
         else:
-            cursor.execute('SELECT DISTINCT plaka FROM yakit ORDER BY plaka')
-
-        plakalar = [row[0] for row in cursor.fetchall()]
-        conn.close()
+            plakalar = get_all_plakas()
+        
         return jsonify({'plakalar': plakalar})
     except Exception as e:
         return jsonify({'plakalar': [], 'error': str(e)})
