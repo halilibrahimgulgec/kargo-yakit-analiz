@@ -73,8 +73,13 @@ def api_plakalar():
 def analyze():
     """Veritabanından analiz yap"""
     try:
-        from model_analyzer import analyze_from_database
         from database import get_database_info, hesapla_gercek_km, fetch_all_paginated, get_aktif_kargo_araclari
+
+        # Model analyzer opsiyonel - yoksa devam et
+        try:
+            from model_analyzer import analyze_from_database
+        except ImportError:
+            analyze_from_database = None
 
         db_info = get_database_info()
         if not db_info.get('exists'):
@@ -93,7 +98,22 @@ def analyze():
         session['filter_plaka'] = plaka
         session['dahil_taseron'] = dahil_taseron
 
-        analysis_result = analyze_from_database()
+        # Model analyzer kullan veya basit analiz yap
+        if analyze_from_database:
+            analysis_result = analyze_from_database()
+        else:
+            # Basit analiz - sadece istatistikler
+            from database import get_statistics
+            stats = get_statistics()
+            analysis_result = {
+                'status': 'success',
+                'records': stats['toplam_kayit'],
+                'toplam_sefer': stats['yakit_kayit'],
+                'toplam_yakit': stats['toplam_yakit'],
+                'toplam_maliyet': stats['toplam_maliyet'],
+                'ortalama_yakit_sefer': stats['toplam_yakit'] / stats['yakit_kayit'] if stats['yakit_kayit'] > 0 else 0,
+                'plakalar': stats['plakalar']
+            }
 
         if analysis_result['status'] == 'error':
             flash(f'❌ Veritabanı analiz hatası: {analysis_result["error"]}', 'error')
@@ -1236,6 +1256,7 @@ def binek_arac_analizi():
         dahil_taseron = request.form.get('dahil_taseron') == '1' if request.method == 'POST' else False
 
         aktif_binek = get_aktif_binek_araclar(dahil_taseron=dahil_taseron)
+        print(f"🔍 DEBUG - Aktif binek araçlar ({len(aktif_binek)}): {aktif_binek}")
 
         if not aktif_binek:
             flash('⚠️ Aktif binek araç bulunamadı. Araç Yönetimi\'nden binek araç ekleyin.', 'warning')
@@ -1253,7 +1274,11 @@ def binek_arac_analizi():
             else:
                 filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
 
+        print(f"🔍 DEBUG - Tarih filtreleri: Başlangıç={baslangic_tarihi}, Bitiş={bitis_tarihi}")
+        print(f"🔍 DEBUG - Supabase filters: {filters}")
+
         yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=filters)
+        print(f"🔍 DEBUG - Yakıt verisi sayısı: {len(yakit_data)}")
 
         # Plakaya göre grupla
         yakit_by_plaka = {}
@@ -1269,6 +1294,8 @@ def binek_arac_analizi():
                 if plaka_key not in yakit_by_plaka:
                     yakit_by_plaka[plaka_key] = []
                 yakit_by_plaka[plaka_key].append(yakit_miktari)
+
+        print(f"🔍 DEBUG - Bulunan binek araç sayısı: {len(yakit_by_plaka)}")
 
         arac_detaylari = []
         toplam_yakit_genel = 0
@@ -1316,7 +1343,115 @@ def binek_arac_analizi():
                              tahminler=tahminler)
 
     except Exception as e:
-        flash(f'❌ Hata: {str(e)}', 'error')
+        flash(f'❌ Binek araç analiz hatası: {str(e)}', 'error')
+        import traceback
+        traceback.print_exc()
+        return redirect(url_for('index'))
+
+@app.route('/kargo-arac-analizi', methods=['GET', 'POST'])
+def kargo_arac_analizi():
+    """Kargo araç analizi sayfası"""
+    try:
+        from database import get_aktif_kargo_araclari, hesapla_gercek_km, fetch_all_paginated
+        import urllib.parse
+
+        # Filtreleri al
+        baslangic_tarihi = request.form.get('baslangic_tarihi') if request.method == 'POST' else None
+        bitis_tarihi = request.form.get('bitis_tarihi') if request.method == 'POST' else None
+        plaka_filtre = request.form.get('plaka') if request.method == 'POST' else None
+        dahil_taseron = request.form.get('dahil_taseron') == '1' if request.method == 'POST' else False
+
+        aktif_kargo = get_aktif_kargo_araclari()
+        print(f"🔍 DEBUG - Aktif kargo araçlar ({len(aktif_kargo)}): {aktif_kargo}")
+
+        if not aktif_kargo:
+            flash('⚠️ Aktif kargo araç bulunamadı. Araç Yönetimi\'nden kargo araç ekleyin.', 'warning')
+            return render_template('result.html',
+                                 arac_detaylari=[],
+                                 genel_ozet={'arac_tipi': 'Kargo Aracı', 'toplam_arac': 0, 'toplam_yakit': 0})
+
+        # Yakıt verilerini çek
+        filters = {}
+        if baslangic_tarihi:
+            filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
+        if bitis_tarihi:
+            if 'islem_tarihi' in filters:
+                filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
+            else:
+                filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
+
+        print(f"🔍 DEBUG - Tarih filtreleri: Başlangıç={baslangic_tarihi}, Bitiş={bitis_tarihi}")
+        print(f"🔍 DEBUG - Supabase filters: {filters}")
+
+        yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=filters)
+        print(f"🔍 DEBUG - Yakıt verisi sayısı: {len(yakit_data)}")
+
+        # Plakaya göre grupla
+        yakit_by_plaka = {}
+        for row in yakit_data:
+            plaka_key = row.get('plaka')
+            yakit_miktari = float(row.get('yakit_miktari', 0) or 0)
+
+            # Filtreleme
+            if plaka_key and yakit_miktari > 0 and plaka_key in aktif_kargo:
+                if plaka_filtre and plaka_key != plaka_filtre:
+                    continue
+
+                if plaka_key not in yakit_by_plaka:
+                    yakit_by_plaka[plaka_key] = []
+                yakit_by_plaka[plaka_key].append(yakit_miktari)
+
+        print(f"🔍 DEBUG - Bulunan kargo araç sayısı: {len(yakit_by_plaka)}")
+
+        arac_detaylari = []
+        toplam_yakit_genel = 0
+
+        for plaka_key, yakit_list in yakit_by_plaka.items():
+            toplam_yakit = sum(yakit_list)
+            ortalama_yakit = toplam_yakit / len(yakit_list) if yakit_list else 0
+            yakit_alimlari = len(yakit_list)
+
+            # KM hesaplama
+            toplam_km = hesapla_gercek_km(plaka_key, baslangic_tarihi, bitis_tarihi)
+
+            tuketim = (toplam_yakit / toplam_km * 100) if toplam_km > 0 else 0
+
+            arac_detaylari.append({
+                'plaka': plaka_key,
+                'toplam_yakit': toplam_yakit,
+                'toplam_km': toplam_km,
+                'ortalama_yakit': ortalama_yakit,
+                'yakit_alimlari': yakit_alimlari,
+                'tuketim_100km': tuketim
+            })
+
+            toplam_yakit_genel += toplam_yakit
+
+        genel_ozet = {
+            'toplam_arac': len(arac_detaylari),
+            'toplam_yakit': toplam_yakit_genel,
+            'arac_tipi': 'Kargo Aracı'
+        }
+
+        plakalar = [arac['plaka'] for arac in arac_detaylari]
+        tahminler = [round(arac['ortalama_yakit'], 2) for arac in arac_detaylari]
+
+        toplam_yakit_alimlari = sum(arac['yakit_alimlari'] for arac in arac_detaylari)
+
+        return render_template('result.html',
+                             arac_detaylari=arac_detaylari,
+                             genel_ozet=genel_ozet,
+                             analiz_tipi='kargo',
+                             sefer=toplam_yakit_alimlari,
+                             yakit=round(toplam_yakit_genel, 2),
+                             ortalama_tahmin=round(toplam_yakit_genel / toplam_yakit_alimlari, 2) if toplam_yakit_alimlari > 0 else 0,
+                             plakalar=plakalar,
+                             tahminler=tahminler)
+
+    except Exception as e:
+        flash(f'❌ Kargo araç analiz hatası: {str(e)}', 'error')
+        import traceback
+        traceback.print_exc()
         return redirect(url_for('index'))
 
 @app.route('/is-makinesi-analizi', methods=['GET', 'POST'])
