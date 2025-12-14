@@ -26,6 +26,16 @@ app.jinja_env.globals.update(zip=zip)
 logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Railway"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'port': os.environ.get('PORT', 'unknown')
+    }), 200
+
+
 @app.route('/')
 def index():
     """Ana sayfa - Yakıt tahmin sistemi"""
