@@ -4,6 +4,7 @@ Supabase veritabanı işlemleri
 import os
 from typing import List, Dict, Any, Optional
 import urllib.request
+import urllib.parse
 import json
 
 # .env dosyasını manuel oku
@@ -104,14 +105,15 @@ def fetch_all_paginated(table: str, select: str = '*', filters: dict = None, ord
     limit = 1000
 
     while True:
-        url = f'{SUPABASE_URL}/rest/v1/{table}?select={select}&limit={limit}&offset={offset}'
+        url = f'{SUPABASE_URL}/rest/v1/{table}?select={urllib.parse.quote(select)}&limit={limit}&offset={offset}'
 
         if filters:
             for key, value in filters.items():
-                url += f'&{key}={value}'
+                encoded_value = urllib.parse.quote(str(value))
+                url += f'&{key}={encoded_value}'
 
         if order:
-            url += f'&order={order}'
+            url += f'&order={urllib.parse.quote(order)}'
 
         req = urllib.request.Request(url)
         req.add_header('apikey', SUPABASE_KEY)
@@ -147,10 +149,10 @@ def hesapla_gercek_km(plaka: str, baslangic_tarihi: str = None, bitis_tarihi: st
         float: Toplam gidilen kilometre
     """
     try:
-        url = f'{SUPABASE_URL}/rest/v1/yakit?plaka=eq.{plaka}&km_bilgisi=not.is.null&order=islem_tarihi.asc'
+        url = f'{SUPABASE_URL}/rest/v1/yakit?plaka=eq.{urllib.parse.quote(plaka)}&km_bilgisi=not.is.null&order=islem_tarihi.asc'
 
         if baslangic_tarihi and bitis_tarihi:
-            url += f'&islem_tarihi=gte.{baslangic_tarihi}&islem_tarihi=lte.{bitis_tarihi}'
+            url += f'&islem_tarihi=gte.{urllib.parse.quote(baslangic_tarihi)}&islem_tarihi=lte.{urllib.parse.quote(bitis_tarihi)}'
 
         req = urllib.request.Request(url)
         req.add_header('apikey', SUPABASE_KEY)
@@ -373,7 +375,7 @@ def update_arac(plaka: str, sahip: str, arac_tipi: str, aktif: int, notlar: str 
             'aktif': aktif,
             'notlar': notlar
         }
-        supabase_request(f'araclar?plaka=eq.{plaka}', method='PATCH', data=data)
+        supabase_request(f'araclar?plaka=eq.{urllib.parse.quote(plaka)}', method='PATCH', data=data)
         return {'status': 'success'}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
@@ -381,7 +383,7 @@ def update_arac(plaka: str, sahip: str, arac_tipi: str, aktif: int, notlar: str 
 def delete_arac(plaka: str) -> Dict:
     """Araç sil"""
     try:
-        supabase_request(f'araclar?plaka=eq.{plaka}', method='DELETE')
+        supabase_request(f'araclar?plaka=eq.{urllib.parse.quote(plaka)}', method='DELETE')
         return {'status': 'success'}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
@@ -429,7 +431,7 @@ def update_arac_bulk_sahip(plakalar: List[str], sahip: str) -> int:
     basarili = 0
     for plaka in plakalar:
         try:
-            supabase_request(f'araclar?plaka=eq.{plaka}', method='PATCH', data={'sahip': sahip})
+            supabase_request(f'araclar?plaka=eq.{urllib.parse.quote(plaka)}', method='PATCH', data={'sahip': sahip})
             basarili += 1
         except:
             pass
@@ -440,7 +442,7 @@ def update_arac_bulk_aktif(plakalar: List[str], aktif: int) -> int:
     basarili = 0
     for plaka in plakalar:
         try:
-            supabase_request(f'araclar?plaka=eq.{plaka}', method='PATCH', data={'aktif': aktif})
+            supabase_request(f'araclar?plaka=eq.{urllib.parse.quote(plaka)}', method='PATCH', data={'aktif': aktif})
             basarili += 1
         except:
             pass
@@ -451,21 +453,21 @@ def get_muhasebe_data(baslangic_tarihi: str = None, bitis_tarihi: str = None, pl
     try:
         agirlik_filters = {}
         if baslangic_tarihi:
-            agirlik_filters['tarih'] = f'gte.{baslangic_tarihi}'
+            agirlik_filters['tarih'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
         if bitis_tarihi:
-            agirlik_filters['tarih'] = f'lte.{bitis_tarihi}'
+            agirlik_filters['tarih'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
         if plaka:
-            agirlik_filters['plaka'] = f'eq.{plaka}'
+            agirlik_filters['plaka'] = f'eq.{urllib.parse.quote(plaka)}'
 
         agirlik_data = fetch_all_paginated('agirlik', filters=agirlik_filters)
 
         yakit_filters = {}
         if baslangic_tarihi:
-            yakit_filters['islem_tarihi'] = f'gte.{baslangic_tarihi}'
+            yakit_filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
         if bitis_tarihi:
-            yakit_filters['islem_tarihi'] = f'lte.{bitis_tarihi}'
+            yakit_filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
         if plaka:
-            yakit_filters['plaka'] = f'eq.{plaka}'
+            yakit_filters['plaka'] = f'eq.{urllib.parse.quote(plaka)}'
 
         yakit_data = fetch_all_paginated('yakit', filters=yakit_filters)
 
@@ -525,14 +527,14 @@ def get_arac_takip_data() -> List[Dict]:
 def get_yakit_by_plaka(plaka: str) -> List[Dict]:
     """Belirli bir plakaya ait yakıt verilerini getir"""
     try:
-        return fetch_all_paginated('yakit', filters={'plaka': f'eq.{plaka}'}, order='islem_tarihi.desc')
+        return fetch_all_paginated('yakit', filters={'plaka': f'eq.{urllib.parse.quote(plaka)}'}, order='islem_tarihi.desc')
     except:
         return []
 
 def get_agirlik_by_plaka(plaka: str, sadece_urun: bool = False) -> List[Dict]:
     """Belirli bir plakaya ait ağırlık verilerini getir"""
     try:
-        filters = {'plaka': f'eq.{plaka}'}
+        filters = {'plaka': f'eq.{urllib.parse.quote(plaka)}'}
         if sadece_urun:
             filters['birim'] = 'not.in.(Adet,adet,ADET)'
         return fetch_all_paginated('agirlik', filters=filters, order='tarih.desc')
@@ -542,7 +544,7 @@ def get_agirlik_by_plaka(plaka: str, sadece_urun: bool = False) -> List[Dict]:
 def get_arac_takip_by_plaka(plaka: str) -> List[Dict]:
     """Belirli bir plakaya ait araç takip verilerini getir"""
     try:
-        return fetch_all_paginated('arac_takip', filters={'plaka': f'eq.{plaka}'}, order='created_at.desc')
+        return fetch_all_paginated('arac_takip', filters={'plaka': f'eq.{urllib.parse.quote(plaka)}'}, order='created_at.desc')
     except:
         return []
 
@@ -555,134 +557,7 @@ def check_database_exists() -> bool:
         return False
 
 # ============================================================
-# SQLite Compatibility Layer (For legacy app.py)
+# REMOVED: SQLite Compatibility Layer
+# Railway uses Supabase only - no local SQLite database
 # ============================================================
-import sqlite3
 
-DB_PATH = 'kargo_data.db'
-
-def get_db_connection():
-    """SQLite bağlantısı oluştur"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-# SQLite versiyonu için hesapla_gercek_km'i override et
-_supabase_hesapla_gercek_km = hesapla_gercek_km
-
-def hesapla_gercek_km(plaka: str, conn=None, baslangic_tarihi: str = None, bitis_tarihi: str = None) -> float:
-    """
-    SQLite veya Supabase ile km hesaplama
-    conn parametresi verilirse SQLite kullan, yoksa Supabase
-    """
-    if conn is None:
-        # Supabase versiyonu
-        return _supabase_hesapla_gercek_km(plaka, baslangic_tarihi, bitis_tarihi)
-
-    # SQLite versiyonu
-    try:
-        cursor = conn.cursor()
-
-        query = '''
-            SELECT km_bilgisi, islem_tarihi
-            FROM yakit
-            WHERE plaka = ?
-            AND km_bilgisi IS NOT NULL
-            AND km_bilgisi > 0
-        '''
-
-        params = [plaka]
-
-        if baslangic_tarihi:
-            query += ' AND islem_tarihi >= ?'
-            params.append(baslangic_tarihi)
-
-        if bitis_tarihi:
-            query += ' AND islem_tarihi <= ?'
-            params.append(bitis_tarihi)
-
-        query += ' ORDER BY islem_tarihi ASC'
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-
-        if len(rows) < 2:
-            return 0
-
-        toplam_km = 0
-        onceki_km = None
-
-        for row in rows:
-            km = float(row['km_bilgisi'])
-
-            if onceki_km is not None:
-                fark = km - onceki_km
-                if fark > 0:
-                    toplam_km += fark
-
-            onceki_km = km
-
-        return toplam_km
-    except Exception as e:
-        print(f"Error calculating km (SQLite): {e}")
-        return 0
-
-# SQLite versiyonları için araç listesi fonksiyonlarını override et
-_supabase_get_aktif_binek_araclar = get_aktif_binek_araclar
-_supabase_get_aktif_is_makineleri = get_aktif_is_makineleri
-
-def get_aktif_binek_araclar(dahil_taseron: bool = False) -> List[str]:
-    """SQLite: Aktif binek araçları getir"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        query = '''
-            SELECT DISTINCT y.plaka
-            FROM yakit y
-            JOIN araclar a ON y.plaka = a.plaka
-            WHERE a.arac_tipi = 'BİNEK ARAÇ'
-            AND a.aktif = 1
-        '''
-
-        if not dahil_taseron:
-            query += " AND a.sahip = 'BİZİM'"
-
-        query += ' ORDER BY y.plaka'
-
-        cursor.execute(query)
-        plakalar = [row[0] for row in cursor.fetchall()]
-        conn.close()
-
-        return plakalar
-    except Exception as e:
-        print(f"Error getting binek araçlar: {e}")
-        return []
-
-def get_aktif_is_makineleri(dahil_taseron: bool = False) -> List[str]:
-    """SQLite: Aktif iş makinelerini getir"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        query = '''
-            SELECT DISTINCT y.plaka
-            FROM yakit y
-            JOIN araclar a ON y.plaka = a.plaka
-            WHERE a.arac_tipi = 'İŞ MAKİNESİ'
-            AND a.aktif = 1
-        '''
-
-        if not dahil_taseron:
-            query += " AND a.sahip = 'BİZİM'"
-
-        query += ' ORDER BY y.plaka'
-
-        cursor.execute(query)
-        plakalar = [row[0] for row in cursor.fetchall()]
-        conn.close()
-
-        return plakalar
-    except Exception as e:
-        print(f"Error getting iş makineleri: {e}")
-        return []
