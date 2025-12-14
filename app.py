@@ -1467,13 +1467,4 @@ def is_makinesi_analizi():
         flash(f'❌ Hata: {str(e)}', 'error')
         return redirect(url_for('index'))
 
-if __name__ == '__main__':
-    print("\n" + "="*50)
-    print("🚀 Flask Yakıt Tahmin Sistemi Başlatılıyor...")
-    print("="*50)
-    print("📍 URL: http://localhost:5000")
-    print("📁 Veritabanı: kargo_data.db")
-    print("🔍 Durum: http://localhost:5000/database-status")
-    print("="*50 + "\n")
 
-    app.run(debug=True, host='0.0.0.0', port=5000)
