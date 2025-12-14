@@ -35,7 +35,6 @@ def health_check():
         'port': os.environ.get('PORT', 'unknown')
     }), 200
 
-
 @app.route('/')
 def index():
     """Ana sayfa - Yakıt tahmin sistemi"""
@@ -54,9 +53,9 @@ def api_plakalar():
     """Plaka listesi API - araç tipine göre filtrelenebilir"""
     try:
         from database import get_plakalar_by_type, get_all_plakas
-        
+
         arac_tipi = request.args.get('tip')
-        
+
         if arac_tipi == 'binek':
             plakalar = get_plakalar_by_type('binek')
         elif arac_tipi == 'is_makinesi':
@@ -65,7 +64,7 @@ def api_plakalar():
             plakalar = get_plakalar_by_type('kargo')
         else:
             plakalar = get_all_plakas()
-        
+
         return jsonify({'plakalar': plakalar})
     except Exception as e:
         return jsonify({'plakalar': [], 'error': str(e)})
@@ -75,7 +74,7 @@ def analyze():
     """Veritabanından analiz yap"""
     try:
         from model_analyzer import analyze_from_database
-        from database import get_database_info
+        from database import get_database_info, hesapla_gercek_km, fetch_all_paginated, get_aktif_kargo_araclari
 
         db_info = get_database_info()
         if not db_info.get('exists'):
@@ -108,52 +107,36 @@ def analyze():
         tahminler = []
 
         if analysis_result['toplam_yakit'] > 0 and len(analysis_result.get('plakalar', [])) > 0:
-            from database import get_db_connection, hesapla_gercek_km
-            conn = get_db_connection()
-            cursor = conn.cursor()
+            # Aktif kargo araçlarını al
+            aktif_kargo = get_aktif_kargo_araclari()
 
-            # Detaylı analiz: yakıt ve km bilgileri - SADECE AKTİF KARGO ARAÇLARI
-            cursor.execute('''
-                SELECT
-                    y.plaka,
-                    SUM(y.yakit_miktari) as toplam_yakit,
-                    AVG(y.yakit_miktari) as ortalama_yakit
-                FROM yakit y
-                INNER JOIN araclar a ON y.plaka = a.plaka
-                WHERE y.yakit_miktari IS NOT NULL
-                AND y.yakit_miktari > 0
-                AND a.aktif = 1
-                AND a.arac_tipi = 'KARGO ARACI'
-                GROUP BY y.plaka
-                ORDER BY ortalama_yakit DESC
-            ''')
+            # Tüm yakıt verilerini çek
+            yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari')
 
-            yakit_rows = cursor.fetchall()
+            # Plakaya göre grupla
+            yakit_by_plaka = {}
+            for row in yakit_data:
+                plaka_key = row.get('plaka')
+                yakit_miktari = float(row.get('yakit_miktari', 0) or 0)
+
+                if plaka_key and yakit_miktari > 0 and plaka_key in aktif_kargo:
+                    if plaka_key not in yakit_by_plaka:
+                        yakit_by_plaka[plaka_key] = []
+                    yakit_by_plaka[plaka_key].append(yakit_miktari)
+
             arac_detaylari = []
 
-            for row in yakit_rows:
-                plaka = row['plaka']
-                toplam_yakit = float(row['toplam_yakit'])
-                ortalama_yakit = float(row['ortalama_yakit'])
+            for plaka_key, yakit_list in yakit_by_plaka.items():
+                toplam_yakit = sum(yakit_list)
+                ortalama_yakit = toplam_yakit / len(yakit_list) if yakit_list else 0
 
-                # DOĞRU KM HESAPLAMA: Ardışık kayıtlar arasındaki farkları topla (TARİH FİLTRELİ)
-                toplam_km = hesapla_gercek_km(plaka, conn, baslangic_tarihi, bitis_tarihi)
+                # KM hesaplama
+                toplam_km = hesapla_gercek_km(plaka_key, baslangic_tarihi, bitis_tarihi)
 
-                # Ağırlık ve SEFER bilgisini BİRİM BAZINDA agirlik tablosundan al
-                # SADECE miktar > 0 ve NOT NULL olanlar sefer sayılır
-                cursor.execute('''
-                    SELECT
-                        birim,
-                        SUM(miktar) as toplam,
-                        COUNT(*) as sefer_sayisi
-                    FROM agirlik
-                    WHERE plaka = ?
-                    AND miktar IS NOT NULL
-                    AND miktar > 0
-                    GROUP BY birim
-                ''', (plaka,))
-
-                agirlik_rows = cursor.fetchall()
+                # Ağırlık verilerini çek
+                agirlik_data = fetch_all_paginated('agirlik',
+                                                   select='birim,miktar',
+                                                   filters={'plaka': f'eq.{plaka_key}'})
 
                 # Birim bazında verileri ayır
                 kg_data = {'toplam': 0, 'sefer': 0}
@@ -163,37 +146,40 @@ def analyze():
                 mt_data = {'toplam': 0, 'sefer': 0}
                 toplam_sefer = 0
 
-                for ag_row in agirlik_rows:
-                    birim = ag_row['birim'] if ag_row['birim'] else ''
-                    toplam = float(ag_row['toplam']) if ag_row['toplam'] else 0
-                    sefer = int(ag_row['sefer_sayisi']) if ag_row['sefer_sayisi'] else 0
+                for ag_row in agirlik_data:
+                    birim = (ag_row.get('birim') or '').upper()
+                    miktar = float(ag_row.get('miktar', 0) or 0)
 
-                    if birim.upper() == 'KG':
-                        kg_data = {'toplam': toplam, 'sefer': sefer}
-                        toplam_sefer += sefer
-                    elif birim.upper() == 'M2':
-                        m2_data = {'toplam': toplam, 'sefer': sefer}
-                        toplam_sefer += sefer
-                    elif birim.upper() == 'M3':
-                        m3_data = {'toplam': toplam, 'sefer': sefer}
-                        toplam_sefer += sefer
-                    elif birim.upper() == 'ADET':
-                        adet_data = {'toplam': toplam, 'sefer': sefer}
-                    elif birim.upper() == 'MT':
-                        mt_data = {'toplam': toplam, 'sefer': sefer}
-                        toplam_sefer += sefer
+                    if miktar > 0:
+                        if birim == 'KG':
+                            kg_data['toplam'] += miktar
+                            kg_data['sefer'] += 1
+                            toplam_sefer += 1
+                        elif birim == 'M2':
+                            m2_data['toplam'] += miktar
+                            m2_data['sefer'] += 1
+                            toplam_sefer += 1
+                        elif birim == 'M3':
+                            m3_data['toplam'] += miktar
+                            m3_data['sefer'] += 1
+                            toplam_sefer += 1
+                        elif birim == 'ADET':
+                            adet_data['toplam'] += miktar
+                            adet_data['sefer'] += 1
+                        elif birim == 'MT':
+                            mt_data['toplam'] += miktar
+                            mt_data['sefer'] += 1
+                            toplam_sefer += 1
 
-                # Hesaplamalar - KM veya yük bilgisi yoksa None döndür
-                # km_litre_orani: 1 litre ile kaç km gidiyor (örn: 5.2 km/litre)
-                km_litre_orani = round(toplam_km / toplam_yakit, 2) if toplam_yakit > 0 else None
-                # kg_litre_orani: 1 litre ile kaç kg taşıdı (örn: 1200 kg/litre) - YÜKSEK = VERİMLİ
+                # Hesaplamalar
+                km_litre_orani = round(toplam_km / toplam_yakit, 2) if toplam_yakit > 0 and toplam_km > 0 else None
                 kg_litre_orani = round(kg_data['toplam'] / toplam_yakit, 2) if toplam_yakit > 0 and kg_data['toplam'] > 0 else None
 
-                plakalar.append(plaka)
+                plakalar.append(plaka_key)
                 tahminler.append(round(ortalama_yakit, 2))
 
                 arac_detaylari.append({
-                    'plaka': plaka,
+                    'plaka': plaka_key,
                     'toplam_yakit': round(toplam_yakit, 2),
                     'toplam_km': round(toplam_km, 2) if toplam_km > 0 else None,
                     'sefer_sayisi': toplam_sefer,
@@ -211,8 +197,6 @@ def analyze():
                     'km_litre_orani': km_litre_orani,
                     'kg_litre_orani': kg_litre_orani
                 })
-
-            conn.close()
         else:
             flash(f'❌ Veritabanında yakıt verisi bulunamadı! Kayıt sayısı: {analysis_result["records"]}, Toplam yakıt: {analysis_result["toplam_yakit"]}, Plaka sayısı: {len(analysis_result.get("plakalar", []))}', 'error')
             return redirect(url_for('index'))
@@ -778,7 +762,7 @@ def arac_toplu_sil():
 def arac_toplu_sahip():
     """Toplu araç sahip güncelle (BİZİM/TAŞERON)"""
     try:
-        from database import get_db_connection
+        from database import update_arac_bulk_sahip
 
         plakalar = request.form.getlist('plakalar')
         sahip = request.form.get('sahip')
@@ -787,17 +771,7 @@ def arac_toplu_sahip():
             flash('❌ Araç seçilmedi!', 'error')
             return redirect(url_for('arac_yonetimi'))
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        basarili = 0
-        for plaka in plakalar:
-            cursor.execute('UPDATE araclar SET sahip = ? WHERE plaka = ?', (sahip, plaka))
-            basarili += 1
-
-        conn.commit()
-        conn.close()
-
+        basarili = update_arac_bulk_sahip(plakalar, sahip)
         flash(f'✅ {basarili} araç "{sahip}" olarak güncellendi!', 'success')
 
     except Exception as e:
@@ -809,7 +783,7 @@ def arac_toplu_sahip():
 def arac_toplu_durum():
     """Toplu araç durum güncelle (Aktif/Pasif)"""
     try:
-        from database import get_db_connection
+        from database import update_arac_bulk_aktif
 
         plakalar = request.form.getlist('plakalar')
         aktif = request.form.get('aktif')
@@ -818,17 +792,7 @@ def arac_toplu_durum():
             flash('❌ Araç seçilmedi!', 'error')
             return redirect(url_for('arac_yonetimi'))
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        basarili = 0
-        for plaka in plakalar:
-            cursor.execute('UPDATE araclar SET aktif = ? WHERE plaka = ?', (aktif, plaka))
-            basarili += 1
-
-        conn.commit()
-        conn.close()
-
+        basarili = update_arac_bulk_aktif(plakalar, int(aktif))
         durum_text = 'AKTİF' if aktif == '1' else 'PASİF'
         flash(f'✅ {basarili} araç "{durum_text}" yapıldı!', 'success')
 
@@ -1253,13 +1217,17 @@ def assistant_clear():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
+@app.route('/health')
+def health():
+    """Health check endpoint for Railway"""
+    return jsonify({'status': 'ok', 'message': 'Server is running'}), 200
+
 @app.route('/binek-arac-analizi', methods=['GET', 'POST'])
 def binek_arac_analizi():
     """Binek araç analizi sayfası"""
     try:
-        from database import get_aktif_binek_araclar, get_db_connection
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from database import get_aktif_binek_araclar, hesapla_gercek_km, fetch_all_paginated
+        import urllib.parse
 
         # Filtreleri al
         baslangic_tarihi = request.form.get('baslangic_tarihi') if request.method == 'POST' else None
@@ -1275,62 +1243,53 @@ def binek_arac_analizi():
                                  arac_detaylari=[],
                                  genel_ozet={'arac_tipi': 'Binek Araç', 'toplam_arac': 0, 'toplam_yakit': 0})
 
-        # SQL sorgusu filtrelerle
-        where_conditions = [f'y.plaka IN ({",".join("?" * len(aktif_binek))})']
-        params = list(aktif_binek)
-
+        # Yakıt verilerini çek
+        filters = {}
         if baslangic_tarihi:
-            where_conditions.append('y.islem_tarihi >= ?')
-            params.append(baslangic_tarihi)
-
+            filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
         if bitis_tarihi:
-            where_conditions.append('y.islem_tarihi <= ?')
-            params.append(bitis_tarihi)
+            if 'islem_tarihi' in filters:
+                filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
+            else:
+                filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
 
-        if plaka_filtre:
-            where_conditions.append('y.plaka = ?')
-            params.append(plaka_filtre)
+        yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=filters)
 
-        where_clause = ' AND '.join(where_conditions)
+        # Plakaya göre grupla
+        yakit_by_plaka = {}
+        for row in yakit_data:
+            plaka_key = row.get('plaka')
+            yakit_miktari = float(row.get('yakit_miktari', 0) or 0)
 
-        cursor.execute(f'''
-            SELECT
-                y.plaka,
-                SUM(y.yakit_miktari) as toplam_yakit,
-                AVG(y.yakit_miktari) as ortalama_yakit,
-                COUNT(*) as yakit_alimlari
-            FROM yakit y
-            WHERE {where_clause}
-            AND y.yakit_miktari IS NOT NULL
-            AND y.yakit_miktari > 0
-            GROUP BY y.plaka
-            ORDER BY toplam_yakit DESC
-        ''', tuple(params))
+            # Filtreleme
+            if plaka_key and yakit_miktari > 0 and plaka_key in aktif_binek:
+                if plaka_filtre and plaka_key != plaka_filtre:
+                    continue
 
-        rows = cursor.fetchall()
+                if plaka_key not in yakit_by_plaka:
+                    yakit_by_plaka[plaka_key] = []
+                yakit_by_plaka[plaka_key].append(yakit_miktari)
 
         arac_detaylari = []
         toplam_yakit_genel = 0
 
-        from database import hesapla_gercek_km
+        for plaka_key, yakit_list in yakit_by_plaka.items():
+            toplam_yakit = sum(yakit_list)
+            ortalama_yakit = toplam_yakit / len(yakit_list) if yakit_list else 0
+            yakit_alimlari = len(yakit_list)
 
-        for row in rows:
-            plaka = row['plaka']
-            toplam_yakit = float(row['toplam_yakit'])
-            yakit_alimlari = row['yakit_alimlari']
+            # KM hesaplama
+            toplam_km = hesapla_gercek_km(plaka_key, baslangic_tarihi, bitis_tarihi)
 
-            # DOĞRU KM HESAPLAMA: Ardışık kayıtlar arasındaki fark (TARİH FİLTRELİ)
-            toplam_km = hesapla_gercek_km(plaka, conn, baslangic_tarihi, bitis_tarihi)
-
-            tüketim = (toplam_yakit / toplam_km * 100) if toplam_km > 0 else 0
+            tuketim = (toplam_yakit / toplam_km * 100) if toplam_km > 0 else 0
 
             arac_detaylari.append({
-                'plaka': row['plaka'],
+                'plaka': plaka_key,
                 'toplam_yakit': toplam_yakit,
                 'toplam_km': toplam_km,
-                'ortalama_yakit': float(row['ortalama_yakit']),
+                'ortalama_yakit': ortalama_yakit,
                 'yakit_alimlari': yakit_alimlari,
-                'tuketim_100km': tüketim
+                'tuketim_100km': tuketim
             })
 
             toplam_yakit_genel += toplam_yakit
@@ -1364,9 +1323,8 @@ def binek_arac_analizi():
 def is_makinesi_analizi():
     """İş makinesi analizi sayfası"""
     try:
-        from database import get_aktif_is_makineleri, get_db_connection
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        from database import get_aktif_is_makineleri, hesapla_gercek_km, fetch_all_paginated
+        import urllib.parse
 
         # Filtreleri al
         baslangic_tarihi = request.form.get('baslangic_tarihi') if request.method == 'POST' else None
@@ -1382,62 +1340,53 @@ def is_makinesi_analizi():
                                  arac_detaylari=[],
                                  genel_ozet={'arac_tipi': 'İş Makinesi', 'toplam_arac': 0, 'toplam_yakit': 0})
 
-        # SQL sorgusu filtrelerle
-        where_conditions = [f'y.plaka IN ({",".join("?" * len(aktif_makineler))})']
-        params = list(aktif_makineler)
-
+        # Yakıt verilerini çek
+        filters = {}
         if baslangic_tarihi:
-            where_conditions.append('y.islem_tarihi >= ?')
-            params.append(baslangic_tarihi)
-
+            filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
         if bitis_tarihi:
-            where_conditions.append('y.islem_tarihi <= ?')
-            params.append(bitis_tarihi)
+            if 'islem_tarihi' in filters:
+                filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
+            else:
+                filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
 
-        if plaka_filtre:
-            where_conditions.append('y.plaka = ?')
-            params.append(plaka_filtre)
+        yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=filters)
 
-        where_clause = ' AND '.join(where_conditions)
+        # Plakaya göre grupla
+        yakit_by_plaka = {}
+        for row in yakit_data:
+            plaka_key = row.get('plaka')
+            yakit_miktari = float(row.get('yakit_miktari', 0) or 0)
 
-        cursor.execute(f'''
-            SELECT
-                y.plaka,
-                SUM(y.yakit_miktari) as toplam_yakit,
-                AVG(y.yakit_miktari) as ortalama_yakit,
-                COUNT(*) as yakit_alimlari
-            FROM yakit y
-            WHERE {where_clause}
-            AND y.yakit_miktari IS NOT NULL
-            AND y.yakit_miktari > 0
-            GROUP BY y.plaka
-            ORDER BY toplam_yakit DESC
-        ''', tuple(params))
+            # Filtreleme
+            if plaka_key and yakit_miktari > 0 and plaka_key in aktif_makineler:
+                if plaka_filtre and plaka_key != plaka_filtre:
+                    continue
 
-        rows = cursor.fetchall()
+                if plaka_key not in yakit_by_plaka:
+                    yakit_by_plaka[plaka_key] = []
+                yakit_by_plaka[plaka_key].append(yakit_miktari)
 
         arac_detaylari = []
         toplam_yakit_genel = 0
 
-        from database import hesapla_gercek_km
+        for plaka_key, yakit_list in yakit_by_plaka.items():
+            toplam_yakit = sum(yakit_list)
+            ortalama_yakit = toplam_yakit / len(yakit_list) if yakit_list else 0
+            yakit_alimlari = len(yakit_list)
 
-        for row in rows:
-            plaka = row['plaka']
-            toplam_yakit = float(row['toplam_yakit'])
-            yakit_alimlari = row['yakit_alimlari']
+            # KM hesaplama
+            toplam_km = hesapla_gercek_km(plaka_key, baslangic_tarihi, bitis_tarihi)
 
-            # DOĞRU KM HESAPLAMA: Ardışık kayıtlar arasındaki fark (TARİH FİLTRELİ)
-            toplam_km = hesapla_gercek_km(plaka, conn, baslangic_tarihi, bitis_tarihi)
-
-            tüketim = (toplam_yakit / toplam_km * 100) if toplam_km > 0 else 0
+            tuketim = (toplam_yakit / toplam_km * 100) if toplam_km > 0 else 0
 
             arac_detaylari.append({
-                'plaka': row['plaka'],
+                'plaka': plaka_key,
                 'toplam_yakit': toplam_yakit,
                 'toplam_km': toplam_km,
-                'ortalama_yakit': float(row['ortalama_yakit']),
+                'ortalama_yakit': ortalama_yakit,
                 'yakit_alimlari': yakit_alimlari,
-                'tuketim_100km': tüketim
+                'tuketim_100km': tuketim
             })
 
             toplam_yakit_genel += toplam_yakit
@@ -1478,6 +1427,3 @@ if __name__ == '__main__':
     print("="*50 + "\n")
 
     app.run(debug=False, host='0.0.0.0', port=port)
-
-
-
