@@ -1340,7 +1340,8 @@ def binek_arac_analizi():
                              yakit=round(toplam_yakit_genel, 2),
                              ortalama_tahmin=round(toplam_yakit_genel / toplam_yakit_alimlari, 2) if toplam_yakit_alimlari > 0 else 0,
                              plakalar=plakalar,
-                             tahminler=tahminler)
+                             tahminler=tahminler,
+                             now=datetime.now())
 
     except Exception as e:
         flash(f'❌ Binek araç analiz hatası: {str(e)}', 'error')
@@ -1371,20 +1372,32 @@ def kargo_arac_analizi():
                                  genel_ozet={'arac_tipi': 'Kargo Aracı', 'toplam_arac': 0, 'toplam_yakit': 0})
 
         # Yakıt verilerini çek
-        filters = {}
+        yakit_filters = {}
         if baslangic_tarihi:
-            filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
+            yakit_filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
         if bitis_tarihi:
-            if 'islem_tarihi' in filters:
-                filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
+            if 'islem_tarihi' in yakit_filters:
+                yakit_filters['islem_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
             else:
-                filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
+                yakit_filters['islem_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
 
         print(f"🔍 DEBUG - Tarih filtreleri: Başlangıç={baslangic_tarihi}, Bitiş={bitis_tarihi}")
-        print(f"🔍 DEBUG - Supabase filters: {filters}")
 
-        yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=filters)
+        yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=yakit_filters)
         print(f"🔍 DEBUG - Yakıt verisi sayısı: {len(yakit_data)}")
+
+        # Kargo verilerini çek (KG, M2, M3, ADET, MT)
+        kargo_filters = {}
+        if baslangic_tarihi:
+            kargo_filters['sefer_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
+        if bitis_tarihi:
+            if 'sefer_tarihi' in kargo_filters:
+                kargo_filters['sefer_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
+            else:
+                kargo_filters['sefer_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
+
+        kargo_data = fetch_all_paginated('kargo', select='plaka,kg,m2,m3,adet,mt', filters=kargo_filters)
+        print(f"🔍 DEBUG - Kargo verisi sayısı: {len(kargo_data)}")
 
         # Plakaya göre grupla
         yakit_by_plaka = {}
@@ -1392,7 +1405,6 @@ def kargo_arac_analizi():
             plaka_key = row.get('plaka')
             yakit_miktari = float(row.get('yakit_miktari', 0) or 0)
 
-            # Filtreleme
             if plaka_key and yakit_miktari > 0 and plaka_key in aktif_kargo:
                 if plaka_filtre and plaka_key != plaka_filtre:
                     continue
@@ -1401,31 +1413,89 @@ def kargo_arac_analizi():
                     yakit_by_plaka[plaka_key] = []
                 yakit_by_plaka[plaka_key].append(yakit_miktari)
 
+        # Kargo verilerini plakaya göre grupla
+        kargo_by_plaka = {}
+        for row in kargo_data:
+            plaka_key = row.get('plaka')
+            if plaka_key and plaka_key in aktif_kargo:
+                if plaka_filtre and plaka_key != plaka_filtre:
+                    continue
+
+                if plaka_key not in kargo_by_plaka:
+                    kargo_by_plaka[plaka_key] = {
+                        'kg_toplam': 0, 'kg_sefer': 0,
+                        'm2_toplam': 0, 'm2_sefer': 0,
+                        'm3_toplam': 0, 'm3_sefer': 0,
+                        'adet_toplam': 0, 'adet_sefer': 0,
+                        'mt_toplam': 0, 'mt_sefer': 0
+                    }
+
+                kg = float(row.get('kg', 0) or 0)
+                m2 = float(row.get('m2', 0) or 0)
+                m3 = float(row.get('m3', 0) or 0)
+                adet = int(row.get('adet', 0) or 0)
+                mt = float(row.get('mt', 0) or 0)
+
+                if kg > 0:
+                    kargo_by_plaka[plaka_key]['kg_toplam'] += kg
+                    kargo_by_plaka[plaka_key]['kg_sefer'] += 1
+                if m2 > 0:
+                    kargo_by_plaka[plaka_key]['m2_toplam'] += m2
+                    kargo_by_plaka[plaka_key]['m2_sefer'] += 1
+                if m3 > 0:
+                    kargo_by_plaka[plaka_key]['m3_toplam'] += m3
+                    kargo_by_plaka[plaka_key]['m3_sefer'] += 1
+                if adet > 0:
+                    kargo_by_plaka[plaka_key]['adet_toplam'] += adet
+                    kargo_by_plaka[plaka_key]['adet_sefer'] += 1
+                if mt > 0:
+                    kargo_by_plaka[plaka_key]['mt_toplam'] += mt
+                    kargo_by_plaka[plaka_key]['mt_sefer'] += 1
+
         print(f"🔍 DEBUG - Bulunan kargo araç sayısı: {len(yakit_by_plaka)}")
 
         arac_detaylari = []
         toplam_yakit_genel = 0
+        toplam_sefer = 0
 
         for plaka_key, yakit_list in yakit_by_plaka.items():
             toplam_yakit = sum(yakit_list)
             ortalama_yakit = toplam_yakit / len(yakit_list) if yakit_list else 0
-            yakit_alimlari = len(yakit_list)
+            sefer_sayisi = len(yakit_list)
 
             # KM hesaplama
             toplam_km = hesapla_gercek_km(plaka_key, baslangic_tarihi, bitis_tarihi)
 
-            tuketim = (toplam_yakit / toplam_km * 100) if toplam_km > 0 else 0
+            # Kargo verileri
+            kargo_info = kargo_by_plaka.get(plaka_key, {})
+            kg_toplam = kargo_info.get('kg_toplam', 0)
+
+            # Verimlilik metrikleri
+            km_litre_orani = round(toplam_km / toplam_yakit, 2) if toplam_yakit > 0 else 0
+            kg_litre_orani = round(kg_toplam / toplam_yakit, 2) if toplam_yakit > 0 else 0
 
             arac_detaylari.append({
                 'plaka': plaka_key,
                 'toplam_yakit': toplam_yakit,
                 'toplam_km': toplam_km,
-                'ortalama_yakit': ortalama_yakit,
-                'yakit_alimlari': yakit_alimlari,
-                'tuketim_100km': tuketim
+                'ortalama_yakit': round(ortalama_yakit, 2),
+                'sefer_sayisi': sefer_sayisi,
+                'kg_toplam': kargo_info.get('kg_toplam', 0),
+                'kg_sefer': kargo_info.get('kg_sefer', 0),
+                'm2_toplam': kargo_info.get('m2_toplam', 0),
+                'm2_sefer': kargo_info.get('m2_sefer', 0),
+                'm3_toplam': kargo_info.get('m3_toplam', 0),
+                'm3_sefer': kargo_info.get('m3_sefer', 0),
+                'adet_toplam': kargo_info.get('adet_toplam', 0),
+                'adet_sefer': kargo_info.get('adet_sefer', 0),
+                'mt_toplam': kargo_info.get('mt_toplam', 0),
+                'mt_sefer': kargo_info.get('mt_sefer', 0),
+                'km_litre_orani': km_litre_orani,
+                'kg_litre_orani': kg_litre_orani
             })
 
             toplam_yakit_genel += toplam_yakit
+            toplam_sefer += sefer_sayisi
 
         genel_ozet = {
             'toplam_arac': len(arac_detaylari),
@@ -1434,19 +1504,18 @@ def kargo_arac_analizi():
         }
 
         plakalar = [arac['plaka'] for arac in arac_detaylari]
-        tahminler = [round(arac['ortalama_yakit'], 2) for arac in arac_detaylari]
-
-        toplam_yakit_alimlari = sum(arac['yakit_alimlari'] for arac in arac_detaylari)
+        tahminler = [arac['ortalama_yakit'] for arac in arac_detaylari]
 
         return render_template('result.html',
                              arac_detaylari=arac_detaylari,
                              genel_ozet=genel_ozet,
                              analiz_tipi='kargo',
-                             sefer=toplam_yakit_alimlari,
+                             sefer=toplam_sefer,
                              yakit=round(toplam_yakit_genel, 2),
-                             ortalama_tahmin=round(toplam_yakit_genel / toplam_yakit_alimlari, 2) if toplam_yakit_alimlari > 0 else 0,
+                             ortalama_tahmin=round(toplam_yakit_genel / toplam_sefer, 2) if toplam_sefer > 0 else 0,
                              plakalar=plakalar,
-                             tahminler=tahminler)
+                             tahminler=tahminler,
+                             now=datetime.now())
 
     except Exception as e:
         flash(f'❌ Kargo araç analiz hatası: {str(e)}', 'error')
@@ -1545,10 +1614,13 @@ def is_makinesi_analizi():
                              yakit=round(toplam_yakit_genel, 2),
                              ortalama_tahmin=round(toplam_yakit_genel / toplam_yakit_alimlari, 2) if toplam_yakit_alimlari > 0 else 0,
                              plakalar=plakalar,
-                             tahminler=tahminler)
+                             tahminler=tahminler,
+                             now=datetime.now())
 
     except Exception as e:
-        flash(f'❌ Hata: {str(e)}', 'error')
+        flash(f'❌ İş makinesi analiz hatası: {str(e)}', 'error')
+        import traceback
+        traceback.print_exc()
         return redirect(url_for('index'))
 
 if __name__ == '__main__':
