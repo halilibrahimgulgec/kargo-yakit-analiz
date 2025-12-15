@@ -1386,18 +1386,18 @@ def kargo_arac_analizi():
         yakit_data = fetch_all_paginated('yakit', select='plaka,yakit_miktari', filters=yakit_filters)
         print(f"🔍 DEBUG - Yakıt verisi sayısı: {len(yakit_data)}")
 
-        # Kargo verilerini çek (KG, M2, M3, ADET, MT)
-        kargo_filters = {}
+        # Ağırlık verilerini çek (agirlik tablosundan)
+        agirlik_filters = {}
         if baslangic_tarihi:
-            kargo_filters['sefer_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
+            agirlik_filters['tarih'] = f'gte.{urllib.parse.quote(baslangic_tarihi)}'
         if bitis_tarihi:
-            if 'sefer_tarihi' in kargo_filters:
-                kargo_filters['sefer_tarihi'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
+            if 'tarih' in agirlik_filters:
+                agirlik_filters['tarih'] = f'gte.{urllib.parse.quote(baslangic_tarihi)},lte.{urllib.parse.quote(bitis_tarihi)}'
             else:
-                kargo_filters['sefer_tarihi'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
+                agirlik_filters['tarih'] = f'lte.{urllib.parse.quote(bitis_tarihi)}'
 
-        kargo_data = fetch_all_paginated('kargo', select='plaka,kg,m2,m3,adet,mt', filters=kargo_filters)
-        print(f"🔍 DEBUG - Kargo verisi sayısı: {len(kargo_data)}")
+        kargo_data = fetch_all_paginated('agirlik', select='plaka,net_agirlik,birim,miktar', filters=agirlik_filters)
+        print(f"🔍 DEBUG - Ağırlık verisi sayısı: {len(kargo_data)}")
 
         # Plakaya göre grupla
         yakit_by_plaka = {}
@@ -1430,27 +1430,32 @@ def kargo_arac_analizi():
                         'mt_toplam': 0, 'mt_sefer': 0
                     }
 
-                kg = float(row.get('kg', 0) or 0)
-                m2 = float(row.get('m2', 0) or 0)
-                m3 = float(row.get('m3', 0) or 0)
-                adet = int(row.get('adet', 0) or 0)
-                mt = float(row.get('mt', 0) or 0)
+                net_agirlik = float(row.get('net_agirlik', 0) or 0)
+                birim = (row.get('birim') or '').upper()
+                miktar = float(row.get('miktar', 0) or 0)
 
-                if kg > 0:
-                    kargo_by_plaka[plaka_key]['kg_toplam'] += kg
+                # Net ağırlık varsa KG olarak kaydet (ton ise kg'ye çevir)
+                if net_agirlik > 0:
+                    kg_deger = net_agirlik
+                    if 'TON' in birim.upper():
+                        kg_deger = net_agirlik * 1000
+                    kargo_by_plaka[plaka_key]['kg_toplam'] += kg_deger
                     kargo_by_plaka[plaka_key]['kg_sefer'] += 1
-                if m2 > 0:
-                    kargo_by_plaka[plaka_key]['m2_toplam'] += m2
-                    kargo_by_plaka[plaka_key]['m2_sefer'] += 1
-                if m3 > 0:
-                    kargo_by_plaka[plaka_key]['m3_toplam'] += m3
-                    kargo_by_plaka[plaka_key]['m3_sefer'] += 1
-                if adet > 0:
-                    kargo_by_plaka[plaka_key]['adet_toplam'] += adet
-                    kargo_by_plaka[plaka_key]['adet_sefer'] += 1
-                if mt > 0:
-                    kargo_by_plaka[plaka_key]['mt_toplam'] += mt
-                    kargo_by_plaka[plaka_key]['mt_sefer'] += 1
+
+                # Birim bazında diğer ölçüler
+                if miktar > 0:
+                    if 'M2' in birim or 'M²' in birim:
+                        kargo_by_plaka[plaka_key]['m2_toplam'] += miktar
+                        kargo_by_plaka[plaka_key]['m2_sefer'] += 1
+                    elif 'M3' in birim or 'M³' in birim:
+                        kargo_by_plaka[plaka_key]['m3_toplam'] += miktar
+                        kargo_by_plaka[plaka_key]['m3_sefer'] += 1
+                    elif 'ADET' in birim or 'AD' in birim:
+                        kargo_by_plaka[plaka_key]['adet_toplam'] += int(miktar)
+                        kargo_by_plaka[plaka_key]['adet_sefer'] += 1
+                    elif 'MT' in birim or 'METRE' in birim:
+                        kargo_by_plaka[plaka_key]['mt_toplam'] += miktar
+                        kargo_by_plaka[plaka_key]['mt_sefer'] += 1
 
         print(f"🔍 DEBUG - Bulunan kargo araç sayısı: {len(yakit_by_plaka)}")
 
